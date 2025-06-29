@@ -1,6 +1,8 @@
 import React from 'react'
 import { Inter } from "next/font/google";
-import GoogleAuthCard from "@/pages/components/google-auth-card";
+import GoogleAuthCard from "@/components/google-auth-card";
+import { useSession } from 'next-auth/react';
+import Dashboard from '@/components/dashboard';
 
 const inter = Inter({
   variable: "--font-inter",
@@ -8,7 +10,10 @@ const inter = Inter({
 });
 
 export default function index() {
-  return <div className={inter.className}>
-    <GoogleAuthCard />
-  </div>;
+  const { status } = useSession();
+  return (
+    <div className={inter.className}>
+      {status === "authenticated" ? <Dashboard /> : <GoogleAuthCard />} 
+    </div>
+  );
 }

@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import Container from "./container";
+import React from "react";
+import Container from "@/components/container";
 import { Button } from "@/components/ui/button";
 import { FcGoogle } from "react-icons/fc";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
