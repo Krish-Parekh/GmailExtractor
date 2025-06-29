@@ -69,7 +69,7 @@ export function useEmail() {
 
     try {
       const response = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10&q=has:attachment from:${from_email}`,
+        `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=has:attachment from:${from_email}`,
         {
           method: "GET",
           headers: {
@@ -81,18 +81,22 @@ export function useEmail() {
       const data = await response.json();
 
       if (data.messages) {
-        const allEmails: EmailWithAttachments[] = [];
-        for (const message of data.messages) {
-          const messageResponse = await fetch(
-            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}`,
-            {
-              method: "GET",
-              headers: {
-                Authorization: `Bearer ${session?.accessToken}`,
-              },
-            }
-          );
-          const messageData = await messageResponse.json();
+        // Fetch all message details in parallel
+        const messageDetails = await Promise.all(
+          data.messages.map((message: any) =>
+            fetch(
+              `https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}`,
+              {
+                method: "GET",
+                headers: {
+                  Authorization: `Bearer ${session?.accessToken}`,
+                },
+              }
+            ).then(res => res.json().then(msg => ({ ...msg, id: message.id })))
+          )
+        );
+
+        const allEmails: EmailWithAttachments[] = messageDetails.map((messageData: any) => {
           const subjectHeader = messageData.payload?.headers?.find((h: any) => h.name === "Subject");
           const subject = subjectHeader?.value || "No Subject";
           const fromHeader = messageData.payload?.headers?.find((h: any) => h.name === "From");
@@ -100,7 +104,6 @@ export function useEmail() {
           const dateHeader = messageData.payload?.headers?.find((h: any) => h.name === "Date");
           const date = dateHeader?.value || "";
           const messageAttachments = extractAttachments(messageData);
-          // Only include PDFs for now
           const pdfAttachments = messageAttachments
             .filter(
               (att) =>
@@ -109,17 +112,18 @@ export function useEmail() {
             )
             .map((att) => ({
               ...att,
-              messageId: message.id,
+              messageId: messageData.id,
               subject,
             }));
-          allEmails.push({
-            id: message.id,
+          return {
+            id: messageData.id,
             from,
             subject,
             date,
             attachments: pdfAttachments,
-          });
-        }
+          };
+        });
+
         setEmails(allEmails);
       }
     } catch (error) {
