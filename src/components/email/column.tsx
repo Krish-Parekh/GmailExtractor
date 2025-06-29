@@ -2,7 +2,6 @@
 
 import { ColumnDef } from "@tanstack/react-table"
 import { Checkbox } from "../ui/checkbox";
-import { Button } from "../ui/button";
 
 export type Email = {
     id: string;
@@ -49,11 +48,4 @@ export const columns: ColumnDef<Email>[] = [
             return date.toLocaleDateString();
         }
     },
-    {
-        accessorKey: "download",
-        header: "Download",
-        cell: ({ row }) => {
-            return <Button>Download</Button>
-        }
-    }
 ]

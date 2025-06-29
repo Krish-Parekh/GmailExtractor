@@ -1,196 +1,238 @@
-import { useState, useCallback } from "react";
-import { useSession } from "next-auth/react";
-import JSZip from "jszip";
+import { useCallback, useState } from 'react'
+import { Attachment, Email, Message, SearchParams } from '@/types/main'
+import { useSession } from 'next-auth/react'
+import JSZip from 'jszip'
 
-export interface Attachment {
-  filename: string;
-  mimeType: string;
-  attachmentId: string;
-  size: number;
-  messageId: string;
-  subject: string;
+const MESSAGES_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+const MESSAGE_DETAILS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+const MESSAGE_ATTACHMENT_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+interface GetMessagesParams extends SearchParams {
+  token: string
 }
 
-export interface EmailWithAttachments {
-  id: string;
-  from: string;
-  subject: string;
-  date: string;
-  attachments: Attachment[];
+interface GetMessageDetailsParams {
+  id: string
+  token: string
 }
 
-function extractAttachments(message: any) {
-  const attachments: any[] = [];
-  const findAttachments = (part: any) => {
-    if (part.filename && part.filename.length > 0) {
-      attachments.push({
-        filename: part.filename,
-        mimeType: part.mimeType,
-        attachmentId: part.body.attachmentId,
-        size: part.body.size,
-      });
+export async function getMessages({ from_email, start_date, end_date, token }: GetMessagesParams): Promise<Message[]> {
+  try {
+    let q = "has:attachment "
+    if (from_email) {
+      q += `from:${from_email}`
     }
-    if (part.parts) {
-      part.parts.forEach(findAttachments);
+    if (start_date) {
+      q += ` after:${start_date.toISOString().split("T")[0]}`
     }
-  };
-  if (message.payload) {
-    findAttachments(message.payload);
-  }
-  return attachments;
-}
-
-async function fetchAttachmentData({ messageId, attachmentId, accessToken }: { messageId: string, attachmentId: string, accessToken: string }) {
-  const response = await fetch(
-    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/attachments/${attachmentId}`,
-    {
+    if (end_date) {
+      q += ` before:${end_date.toISOString().split("T")[0]}`
+    }
+    const url = `${MESSAGES_URL}?q=${q}&maxResults=10`
+    const response = await fetch(url, {
       method: "GET",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${token}`,
       },
+    })
+    if (!response.ok) {
+      throw new Error("Failed to fetch messages")
     }
-  );
-  const attachmentData = await response.json();
-  // Gmail returns base64url, need to convert to base64
-  const base64 = attachmentData.data.replace(/-/g, "+").replace(/_/g, "/");
-  return base64;
+    const data = await response.json()
+    console.log("data", data)
+    return data.messages as Message[]
+  } catch (error) {
+    return []
+  }
 }
 
-export function useEmail() {
-  const { data: session, status } = useSession();
-  const [emails, setEmails] = useState<EmailWithAttachments[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  const fetchEmails = useCallback(async (from_email: string) => {
-    if (status !== "authenticated") return;
-
-    setLoading(true);
-    setEmails([]);
-
-    try {
-      const response = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=has:attachment from:${from_email}`,
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${session?.accessToken}`,
-          },
-        }
-      );
-
-      const data = await response.json();
-
-      if (data.messages) {
-        // Fetch all message details in parallel
-        const messageDetails = await Promise.all(
-          data.messages.map((message: any) =>
-            fetch(
-              `https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}`,
-              {
-                method: "GET",
-                headers: {
-                  Authorization: `Bearer ${session?.accessToken}`,
-                },
-              }
-            ).then(res => res.json().then(msg => ({ ...msg, id: message.id })))
-          )
-        );
-
-        const allEmails: EmailWithAttachments[] = messageDetails.map((messageData: any) => {
-          const subjectHeader = messageData.payload?.headers?.find((h: any) => h.name === "Subject");
-          const subject = subjectHeader?.value || "No Subject";
-          const fromHeader = messageData.payload?.headers?.find((h: any) => h.name === "From");
-          const from = fromHeader?.value || "Unknown";
-          const dateHeader = messageData.payload?.headers?.find((h: any) => h.name === "Date");
-          const date = dateHeader?.value || "";
-          const messageAttachments = extractAttachments(messageData);
-          const pdfAttachments = messageAttachments
-            .filter(
-              (att) =>
-                att.mimeType === "application/pdf" ||
-                att.filename.toLowerCase().endsWith(".pdf")
-            )
-            .map((att) => ({
-              ...att,
-              messageId: messageData.id,
-              subject,
-            }));
-          return {
-            id: messageData.id,
-            from,
-            subject,
-            date,
-            attachments: pdfAttachments,
-          };
-        });
-
-        setEmails(allEmails);
-      }
-    } catch (error) {
-      console.error("Error fetching emails:", error);
-    } finally {
-      setLoading(false);
+export async function getMessageDetails({ id, token }: GetMessageDetailsParams) {
+  try {
+    const url = `${MESSAGE_DETAILS_URL}/${id}`
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    if (!response.ok) {
+      throw new Error("Failed to fetch message details")
     }
-  }, [session, status]);
+    const data = await response.json()
+    return data
+  } catch (error) {
+    return null
+  }
+}
 
-  // Download utility
-  const downloadAttachmentsAsZip = useCallback(
-    async (attachments: Attachment[], zipName = "attachments.zip") => {
-      if (!session?.accessToken || attachments.length === 0) return;
-      console.log('Zipping attachments:', attachments.map(a => a.filename));
+export async function getAttachment(messageId: string, attachmentId: string, token: string) {
+  try {
+    const url = `${MESSAGE_ATTACHMENT_URL}/${messageId}/attachments/${attachmentId}`
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+    if (!response.ok) {
+      throw new Error("Failed to fetch attachment")
+    }
+    const attachmentData = await response.json()
+    const base64 = attachmentData.data.replace(/-/g, "+").replace(/_/g, "/");
+    return base64
+  } catch (error) {
+    return null
+  }
+}
+
+function processMessageDetails(messageDetails: any[]): Email[] {
+  const emails: Email[] = messageDetails.map(detail => {
+    const attachments: Attachment[] = [];
+
+    const processParts = (parts: any[]) => {
+      if (!parts) return;
+
+      parts.forEach(part => {
+        if (part.filename && part.body && part.body.attachmentId) {
+          attachments.push({
+            filename: part.filename,
+            mimeType: part.mimeType,
+            attachmentId: part.body.attachmentId,
+            size: part.body.size,
+            messageId: detail.id,
+            subject: detail.payload.headers.find((header: { name: string }) => header.name === "Subject")?.value
+          });
+        }
+
+        if (part.parts) {
+          processParts(part.parts);
+        }
+      });
+    };
+
+    if (detail.payload.parts) {
+      processParts(detail.payload.parts);
+    }
+
+    return {
+      id: detail.id,
+      from: detail.payload.headers.find((header: { name: string }) => header.name === "From")?.value,
+      to: detail.payload.headers.find((header: { name: string }) => header.name === "To")?.value,
+      subject: detail.payload.headers.find((header: { name: string }) => header.name === "Subject")?.value,
+      date: detail.payload.headers.find((header: { name: string }) => header.name === "Date")?.value,
+      attachments: attachments
+    };
+  });
+
+  return emails;
+}
+export default function useEmail() {
+  const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const { data: session } = useSession();
+  const [emails, setEmails] = useState<Email[]>([]);
+
+  const fetchEmails = useCallback(async ({ from_email, start_date, end_date }: SearchParams) => {
+    setLoading(true);
+    const messages = await getMessages({ from_email, start_date, end_date, token: session?.accessToken || "" })
+    const messageDetails = await Promise.all(messages?.map(message => getMessageDetails({ id: message.id, token: session?.accessToken || "" })))
+    const processedEmails = processMessageDetails(messageDetails)
+    setEmails(processedEmails)
+    setLoading(false);
+  }, [session?.accessToken])
+
+
+  const downloadAllAttachmentAsZip = useCallback(async (emails: Email[], zipName: string) => {
+    try {
+      setDownloading(true);
       const zip = new JSZip();
-      const usedNames = new Set<string>();
-      for (const att of attachments) {
-        const base64 = await fetchAttachmentData({
-          messageId: att.messageId,
-          attachmentId: att.attachmentId,
-          accessToken: session.accessToken,
-        });
-        // Find the email for this attachment to get the date
-        const email = emails.find(e => e.id === att.messageId);
-        let dateStr = '';
-        if (email && email.date) {
-          // Try to format as YYYY-MM-DD
-          const d = new Date(email.date);
-          if (!isNaN(d.getTime())) {
-            dateStr = `_${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      let attachmentCount = 0;
+      const usedFilenames = new Set();
+
+      for (const email of emails) {
+        if (!email.attachments || email.attachments.length === 0) continue;
+
+        for (const attachment of email.attachments) {
+          if (!attachment.attachmentId) continue;
+
+          // Only process PDF files
+          if (!attachment.mimeType.toLowerCase().includes('pdf')) continue;
+
+          const base64Data = await getAttachment(email.id, attachment.attachmentId, session?.accessToken || "");
+          if (base64Data) {
+
+            let dateStr = '';
+            if (email.date) {
+              const d = new Date(email.date);
+              if (!isNaN(d.getTime())) {
+                dateStr = `_${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+              }
+            }
+
+            const extension = attachment.filename.includes('.') ?
+              '.' + attachment.filename.split('.').pop() : '.pdf';
+
+            let baseFilename = `${attachment.filename}${dateStr}${extension}`;
+
+            // Ensure filename is unique by adding a counter if needed
+            let uniqueFilename = baseFilename;
+            let counter = 1;
+            while (usedFilenames.has(uniqueFilename)) {
+              uniqueFilename = baseFilename.replace(extension, `_${counter}${extension}`);
+              counter++;
+            }
+            usedFilenames.add(uniqueFilename);
+
+            // Convert base64 to binary
+            const binary = atob(base64Data);
+            const array = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              array[i] = binary.charCodeAt(i);
+            }
+
+            // Add directly to zip root with unique filename
+            zip.file(uniqueFilename, array);
+            attachmentCount++;
           }
         }
-        // Build filename: basename_YYYY-MM-DD.ext
-        const ext = att.filename.includes('.') ? '.' + att.filename.split('.').pop() : '';
-        const name = att.filename.replace(ext, '');
-        let filename = `${name}${dateStr}${ext}`;
-        let counter = 1;
-        while (usedNames.has(filename)) {
-          filename = `${name}${dateStr}(${counter})${ext}`;
-          counter++;
-        }
-        usedNames.add(filename);
-        zip.file(filename, base64, { base64: true });
       }
-      const blob = await zip.generateAsync({ type: "blob" });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = zipName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    },
-    [session, emails]
-  );
 
-  // Download all attachments from all emails
-  const downloadAllAttachments = useCallback(() => {
-    const allAttachments = emails.flatMap((email) => email.attachments);
-    downloadAttachmentsAsZip(allAttachments, "all_attachments.zip");
-  }, [emails, downloadAttachmentsAsZip]);
+      if (attachmentCount === 0) {
+        console.log("No PDF attachments found to download");
+        return;
+      }
 
-  // Download selected attachments (pass array of Attachment)
-  const downloadSelectedAttachments = useCallback((selected: Attachment[]) => {
-    downloadAttachmentsAsZip(selected, "selected_attachments.zip");
-  }, [downloadAttachmentsAsZip]);
+      // Generate and download the single zip file after processing all emails
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${zipName}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
 
-  return { emails, loading, fetchEmails, downloadAllAttachments, downloadSelectedAttachments };
+    } catch (error) {
+      console.error("Error downloading attachments:", error);
+    } finally {
+      setDownloading(false);
+    }
+  }, [session?.accessToken]);
+
+
+  const downloadAllAttachments = useCallback(async () => {
+    if (emails.length === 0) {
+      return;
+    }
+    const zipName = "attachments";
+    await downloadAllAttachmentAsZip(emails, zipName);
+  }, [emails, downloadAllAttachmentAsZip]);
+
+  return {
+    loading,
+    downloading,
+    emails,
+    fetchEmails,
+    downloadAllAttachments
+  }
 }
